@@ -16,11 +16,8 @@ const CONT_REC_BLOCK_SIZE = CONT_REC_HEAD_SIZE + CONT_REC_BODY_SIZE +
     CONT_REC_TAIL_SIZE
 
 ### Types ###
-"Type to buffer continuous file contents"
-abstract type BlockBuffer end
-
 "Represents the header of each data block"
-mutable struct BlockHeader <: BlockBuffer
+mutable struct BlockHeader
     timestamp::CONT_REC_TIME_BITTYPE
     nsample::CONT_REC_N_SAMP_BITTYPE
     recordingnumber::CONT_REC_REC_NO_BITTYPE
@@ -28,7 +25,7 @@ end
 BlockHeader() = BlockHeader(0, 0, 0)
 
 "Represents the entirety of a data block"
-mutable struct DataBlock <: BlockBuffer
+mutable struct DataBlock
     head::BlockHeader
     body::Vector{UInt8}
     data::Vector{CONT_REC_SAMP_BITTYPE}
@@ -39,9 +36,12 @@ mutable struct DataBlock <: BlockBuffer
         data::Vector{CONT_REC_SAMP_BITTYPE},
         tail::Vector{UInt8}
     )
-        length(body) == CONT_REC_BODY_SIZE || error("body length must be ", CONT_REC_BODY_SIZE)
-        length(data) == CONT_REC_N_SAMP || error("data length must be ", CONT_REC_N_SAMP)
-        length(tail) == CONT_REC_TAIL_SIZE || error("data length must be ", CONT_REC_TAIL_SIZE)
+        length(body) == CONT_REC_BODY_SIZE ||
+            error("body length must be ", CONT_REC_BODY_SIZE)
+        length(data) == CONT_REC_N_SAMP ||
+            error("data length must be ", CONT_REC_N_SAMP)
+        length(tail) == CONT_REC_TAIL_SIZE ||
+            error("data length must be ", CONT_REC_TAIL_SIZE)
         return new(head, body, data, tail)
     end
 end
@@ -69,17 +69,17 @@ Type for an open continuous file.
 
 **`header`** [`OriginalHeader`](@ref) of the current file.
 """
-struct ContinuousFile{T<:Integer, S<:Integer, H<:OriginalHeader}
+struct ContinuousFile
     "IOStream for open continuous file"
     io::IOStream
     "Path to file, possibly empty"
     filepath::String
     "Number of samples in file"
-    nsample::T
+    nsample::Int
     "Number of data blocks in file"
-    nblock::S
+    nblock::Int
     "File header"
-    header::H
+    header::OriginalHeader
 end
 function ContinuousFile(io::IOStream, filepath::AbstractString = "")
     header = OriginalHeader(io) # Read header
@@ -118,7 +118,7 @@ and have with the following fields:
 
 **`check`** `Bool` to check each data block's validity.
 """
-abstract type OEContArray{T, C<:ContinuousFile} <: OEArray{T} end
+abstract type OEContArray{T} <: OEArray{T} end
 
 ### Stuff for code generation ###
 sampletype = Real
@@ -132,15 +132,15 @@ arraytypes = ((:SampleArray, sampletype, DataBlock, Float64),
 ### Generate array datatypes ###
 for (typename, typeparam, buffertype, defaulttype) = arraytypes
     @eval begin
-        mutable struct $(typename){T<:$(typeparam), C<:ContinuousFile} <: OEContArray{T, C}
-            contfile::C
+        mutable struct $(typename){T<:$(typeparam)} <: OEContArray{T}
+            contfile::ContinuousFile
             block::$(buffertype)
             blockno::UInt
             check::Bool
         end
         function $(typename)(
-            ::Type{T}, contfile::C, check::Bool = true
-        ) where {T, C<:ContinuousFile}
+            ::Type{T}, contfile::ContinuousFile, check::Bool = true
+        ) where {T}
             if check
                 if ! check_filesize(contfile.io)
                     throw(CorruptedException(string(
@@ -153,7 +153,7 @@ for (typename, typeparam, buffertype, defaulttype) = arraytypes
                 end
             end
             block = $(buffertype)()
-            return $(typename){T, C}(contfile, block, 0, check)
+            return $(typename){T}(contfile, block, 0, check)
         end
         function $(typename)(
             ::Type{T},
@@ -213,16 +213,21 @@ size(A::OEContArray) = (length(A),)
 Base.IndexStyle(::Type{T}) where {T<:OEContArray} = IndexLinear()
 
 
-function getindex(A::OEContArray, i::Integer)
+@inline function getindex(A::OEContArray, i::Integer)
+    @boundscheck checkbounds(A, i)
+    _getindex(A, i)
+end
+
+@inline function _getindex(A::OEContArray, i::Integer)
     prepare_block!(A, i)
     relidx = sampno_to_offset(i)
-    data = block_data(A, relidx)
+    @inbounds data = block_data(A, relidx)
     return convert_data(A, data)
 end
 
 ### Array helper functions ###
 "Load data block if necessary"
-function prepare_block!(A::OEContArray, i::Integer)
+@inline function prepare_block!(A::OEContArray, i::Integer)
     blockno = sampno_to_block(i)
     if blockno != A.blockno
         seek_to_block(A.contfile.io, blockno)
@@ -234,7 +239,7 @@ function prepare_block!(A::OEContArray, i::Integer)
 end
 
 "Move io to data block"
-function seek_to_block(io::IOStream, blockno::Integer)
+@inline function seek_to_block(io::IOStream, blockno::Integer)
     blockpos = block_start_pos(blockno)
     if blockpos != position(io)
         seek(io, blockpos)
@@ -242,14 +247,14 @@ function seek_to_block(io::IOStream, blockno::Integer)
 end
 
 ### location functions ###
-sampno_to_block(sampno::Integer) = fld(sampno - 1, CONT_REC_N_SAMP) + 1
+@inline sampno_to_block(sampno::Integer) = fld(sampno - 1, CONT_REC_N_SAMP) + 1
 
-sampno_to_offset(sampno::Integer) = mod(sampno - 1, CONT_REC_N_SAMP) + 1
+@inline sampno_to_offset(sampno::Integer) = mod(sampno - 1, CONT_REC_N_SAMP) + 1
 
-function block_start_pos(blockno::Integer)
-    return (blockno - 1) * CONT_REC_BLOCK_SIZE + HEADER_N_BYTES
-end
+@inline block_start_pos(blockno::Integer) =
+    (blockno - 1) * CONT_REC_BLOCK_SIZE + HEADER_N_BYTES
 
+# Un-exported utility function for debugging
 function pos_to_blockno(pos::Integer)
     if pos < 0
         throw(ArgumentError("Invalid position"))
@@ -265,7 +270,7 @@ blockno_to_start_sampno(blockno::Integer) = (blockno - 1) * CONT_REC_N_SAMP + 1
 
 ### File access and conversion ###
 "Read file data block into data block buffer"
-function read_into!(io::IOStream, block::DataBlock, check::Bool = true)
+@inline function read_into!(io::IOStream, block::DataBlock, check::Bool = true)
     goodread = read_into!(io, block.head)
     goodread || return goodread
     ## Read the body
@@ -281,7 +286,7 @@ function read_into!(io::IOStream, block::DataBlock, check::Bool = true)
     return goodread
 end
 "Read block header into header buffer"
-function read_into!(io::IOStream, head::BlockHeader)
+@inline function read_into!(io::IOStream, head::BlockHeader)
     goodread = true
     try
         head.timestamp = read(io, CONT_REC_TIME_BITTYPE)
@@ -302,7 +307,7 @@ end
 read_into!(io::IOStream, head::BlockHeader, ::Bool) = read_into!(io, head)
 
 "Convert the wacky data format in OpenEphys continuous files"
-function convert_block!(block::DataBlock)
+@inline function convert_block!(block::DataBlock)
     ptr = Ptr{CONT_REC_SAMP_BITTYPE}(pointer(block.body))
     if ENDIAN_BOM == 0x04030201
         # Host is little endian: Always true for now
@@ -316,10 +321,13 @@ function convert_block!(block::DataBlock)
 end
 
 ### Methods to access data in buffer ###
-block_data(A::SampleArray, rel_idx::Integer) = A.block.data[rel_idx]
-block_data(A::TimeArray, rel_idx::Integer) = A.block.timestamp + rel_idx - 1
-block_data(A::RecNoArray, ::Integer) = A.block.recordingnumber
-function block_data(A::JointArray, rel_idx::Integer)
+@inline @propagate_inbounds block_data(A::SampleArray, rel_idx::Integer) =
+    @inbounds return A.block.data[rel_idx]
+@inline block_data(A::TimeArray, rel_idx::Integer) =
+    A.block.timestamp + rel_idx - 1
+@inline block_data(A::RecNoArray, ::Integer) = A.block.recordingnumber
+
+@inline @propagate_inbounds function block_data(A::JointArray, rel_idx::Integer)
     sample = A.block.data[rel_idx]
     timestamp = A.block.head.timestamp + rel_idx - 1
     recno = A.block.head.recordingnumber
@@ -327,36 +335,39 @@ function block_data(A::JointArray, rel_idx::Integer)
 end
 
 ### Methods to convert raw values into desired ones ##
-convert_data(OE::A, data) where {A<:OEContArray} = convert_data(A, OE.contfile.header, data)
+convert_data(OE::A, data) where {A<:OEContArray} =
+    convert_data(A, OE.contfile.header, data)
 function convert_data(
-    ::Type{SampleArray{T, C}}, H::OriginalHeader, data::Integer
-) where {T<:AbstractFloat, C}
+    ::Type{SampleArray{T}}, H::OriginalHeader, data::Integer
+) where {T<:AbstractFloat}
     return data * convert(T, H.bitvolts)
 end
 function convert_data(
-    ::Type{SampleArray{T, C}}, ::OriginalHeader, data::Integer
-) where {T<:Integer, C}
+    ::Type{SampleArray{T}}, ::OriginalHeader, data::Integer
+) where {T<:Integer}
     return convert(T, data)
 end
 function convert_data(
-    ::Type{TimeArray{T, C}}, H::OriginalHeader, data::Integer
-) where {T<:AbstractFloat, C}
+    ::Type{TimeArray{T}}, H::OriginalHeader, data::Integer
+) where {T<:AbstractFloat}
     return convert(T, (data - 1) / H.samplerate) # First sample is at time zero
 end
 function convert_data(
-    ::Type{TimeArray{T, C}}, ::OriginalHeader, data::Integer
-) where {T<:Integer, C}
-    return convert(T, data)
-end
-function convert_data(::Type{RecNoArray{T, C}}, ::OriginalHeader, data::Integer) where {T, C}
+    ::Type{TimeArray{T}}, ::OriginalHeader, data::Integer
+) where {T<:Integer}
     return convert(T, data)
 end
 function convert_data(
-    ::Type{JointArray{Tuple{S,T,R},C}}, H::OriginalHeader, data::Tuple
-) where {S<:sampletype,T<:timetype,R<:rectype,C}
-    samp = convert_data(SampleArray{S, C}, H, data[1])
-    timestamp = convert_data(TimeArray{T, C}, H, data[2])
-    recno = convert_data(RecNoArray{R, C}, H, data[3])
+    ::Type{RecNoArray{T}}, ::OriginalHeader, data::Integer
+) where {T}
+    return convert(T, data)
+end
+function convert_data(
+    ::Type{JointArray{Tuple{S,T,R}}}, H::OriginalHeader, data::Tuple
+) where {S<:sampletype,T<:timetype,R<:rectype}
+    samp = convert_data(SampleArray{S}, H, data[1])
+    timestamp = convert_data(TimeArray{T}, H, data[2])
+    recno = convert_data(RecNoArray{R}, H, data[3])
     return samp, timestamp, recno
 end
 
