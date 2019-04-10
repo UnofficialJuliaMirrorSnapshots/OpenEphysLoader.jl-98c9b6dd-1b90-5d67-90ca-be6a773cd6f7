@@ -1,19 +1,18 @@
 # Type system for original files and header constants
 
-"""
-All subtypes support a ready-only array interface and should
-be constructable with a single IOStream argument.
-"""
-abstract type OEArray{T} <: AbstractArray{T, 1} end
 # I'm using types as a enum here, consider changing this?
 "Abstract class for representing matlab code fragments"
-abstract type MATLABdata end
+abstract type MatlabData end
 "Type for representing Matlab strings"
-struct MATstr <: MATLABdata end
+struct MatStr <: MatlabData end
 "Type for representing Matlab integers"
-struct MATint <: MATLABdata end
-"type for representing Matlab floatingpoint numbers"
-struct MATfloat <: MATLABdata end
+struct MatInt <: MatlabData end
+"Type for representing Matlab floatingpoint numbers"
+struct MatFloat <: MatlabData end
+"Type for representing Matlab floatingpoint numbers"
+struct OEDateTime <: MatlabData end
+"Type for representing Matlab floatingpoint numbers"
+struct MatVersion <: MatlabData end
 
 "Exception type to indicate a malformed data file"
 struct CorruptedException <: Exception
@@ -26,20 +25,7 @@ Base.showerror(io::IO, e::CorruptedException) = print(io, "Corrupted Exception: 
 const HEADER_N_BYTES = 1024
 const HEADER_DATE_REGEX = r"^(\d{1,2}-\p{L}{3}-\d{4}) ([1-2]?\d)([0-5]\d)([1-5]?\d)"
 const HEADER_DATEFORMAT = Dates.DateFormat("d-u-y")
-const HEADER_TYPE_MAP = ((MATstr, String), #Format
-                        (MATfloat, VersionNumber), #Version
-                        (MATint, Int), #headerbytes
-                        (MATstr, String), #description
-                        (MATstr, DateTime), #created
-                        (MATstr, String), #channel
-                        (MATstr, String), #channeltype
-                        (MATint, Int), #samplerate
-                        (MATint, Int), #blocklength
-                        (MATint, Int), #buffersize
-                        (MATfloat, Float64)) #bitvolts
-const HEADER_MATTYPES = [x[1] for x in HEADER_TYPE_MAP]
-const HEADER_TARGET_TYPES = [x[2] for x in HEADER_TYPE_MAP]
-const N_HEADER_LINE = length(HEADER_TYPE_MAP)
+const N_HEADER_LINE = 11
 
 """
     OriginalHeader(io::IOStream)
@@ -72,46 +58,46 @@ not an "OpenEphys" data format, or not version 0.4 of the data format.
 
 **`bitvolts`** are the Volts per ADC bit.
 """
-struct OriginalHeader{T<:AbstractString, S<:Integer, R<:Real}
+struct OriginalHeader
     "Data format"
-    format::T
+    format::String
     "Version of data format"
     version::VersionNumber
     "Number of bytes in the header"
-    headerbytes::S
+    headerbytes::Int
     "Description of the header"
-    description::T
+    description::String
     "Time file created"
     created::DateTime
     "Channel name"
-    channel::T
+    channel::String
     "Channel type"
-    channeltype::T
+    channeltype::String
     "Sample rate for file"
-    samplerate::S
+    samplerate::Int
     "Length of data blocks in bytes"
-    blocklength::S
+    blocklength::Int
     "Size of buffer in bytes"
-    buffersize::S
+    buffersize::Int
     "Volts/bit of ADC values"
-    bitvolts::R
+    bitvolts::Float64
 
-    function OriginalHeader{T, S, R}(
-        format::T,
+    function OriginalHeader(
+        format::String,
         version::VersionNumber,
-        headerbytes::S,
-        description::T,
+        headerbytes::Int,
+        description::String,
         created::DateTime,
-        channel::T,
-        channeltype::T,
-        samplerate::S,
-        blocklength::S,
-        buffersize::S,
-        bitvolts::R
-    ) where {T<:AbstractString, S<:Integer, R<:Real}
+        channel::String,
+        channeltype::String,
+        samplerate::Int,
+        blocklength::Int,
+        buffersize::Int,
+        bitvolts::Float64
+    )
         format == "Open Ephys Data Format" || throw(CorruptedException("Header is malformed"))
-        version == v"0.4" || throw(CorruptedException("Header is malformed"))
-        return new{T, S, R}(
+        version == v"0.4" || version == v"0.2" || throw(CorruptedException("Header is malformed"))
+        return new(
             format,
             version,
             headerbytes,
@@ -127,20 +113,31 @@ struct OriginalHeader{T<:AbstractString, S<:Integer, R<:Real}
     end
 end
 
-function OriginalHeader(
-    format::T,
-    version::VersionNumber,
-    headerbytes::S,
-    description::T,
-    created::DateTime,
-    channel::T,
-    channeltype::T,
-    samplerate::S,
-    blocklength::S,
-    buffersize::S,
-    bitvolts::R
-) where {T<:AbstractString,S<:Integer,R<:Real}
-    return OriginalHeader{T,S,R}(
+"""
+    OriginalHeader(io::IOStream)
+Reads the header of the open binary file `io`. Assumes that the stream
+is at the beginning of the file.
+"""
+function OriginalHeader(io::IOStream)
+    # Read the header from the IOStream and separate on semicolons
+    head = read(io, HEADER_N_BYTES)
+    length(head) == HEADER_N_BYTES || throw(CorruptedException("Header is malformed"))
+    headstr = transcode(String, head)
+    isvalid(headstr) || throw(CorruptedException("Header is malformed"))
+    substrs =  Compat.split(headstr, ';', keepempty = false)
+    resize!(substrs, N_HEADER_LINE)
+    format = parseline(MatStr, substrs[1])
+    version = parseline(MatVersion, substrs[2])
+    headerbytes = parseline(MatInt, substrs[3])
+    description = parseline(MatStr, substrs[4])
+    created = parseline(OEDateTime, substrs[5])
+    channel = parseline(MatStr, substrs[6])
+    channeltype = parseline(MatStr, substrs[7])
+    samplerate = parseline(MatInt, substrs[8])
+    blocklength = parseline(MatInt, substrs[9])
+    buffersize = parseline(MatInt, substrs[10])
+    bitvolts = parseline(MatFloat, substrs[11])
+    return OriginalHeader(
         format,
         version,
         headerbytes,
@@ -155,35 +152,24 @@ function OriginalHeader(
     )
 end
 
-"""
-    OriginalHeader(io::IOStream)
-Reads the header of the open binary file `io`. Assumes that the stream
-is at the beginning of the file.
-"""
-function OriginalHeader(io::IOStream)
-    # Read the header from the IOStream and separate on semicolons
-    head = read(io, HEADER_N_BYTES)
-    length(head) == HEADER_N_BYTES || throw(CorruptedException("Header is malformed"))
-    headstr = transcode(String, head)
-    isvalid(headstr) || throw(CorruptedException("Header is malformed"))
-    substrs =  split(headstr, ';', keep = false)
-    resize!(substrs, N_HEADER_LINE)
-    return OriginalHeader(
-        map(parseline, zip(HEADER_MATTYPES, HEADER_TARGET_TYPES, substrs))...
-    )::OriginalHeader{String, Int, Float64}
-end
-
 "Parse a line of Matlab source code"
 function parseline end
-parseline(::Type{M}, ::Type{T}, str::AbstractString) where {T, M<:MATLABdata} = parseto(T, matread(M, str))::T
-parseline(tup::Tuple) = parseline(tup...)
+function parseline(::Type{M}, str::AbstractString) where {M<:MatlabData}
+    parseto(parsetarget(M), matread(M, str))
+end
+
+parsetarget(::Type{MatStr}) = String
+parsetarget(::Type{MatInt}) = Int
+parsetarget(::Type{MatFloat}) = Float64
+parsetarget(::Type{OEDateTime}) = DateTime
+parsetarget(::Type{MatVersion}) = VersionNumber
 
 "Convert a string to the desired type"
 function parseto end
-parseto(::Type{T}, str::AbstractString) where {T<:Number} = parse(str)::T
+parseto(::Type{T}, str::AbstractString) where T = parse(T, str)
 function parseto(::Type{DateTime}, str::AbstractString)
     m = match(HEADER_DATE_REGEX, str)
-    isa(m, Void) && throw(CorruptedException("Time created is improperly formatted"))
+    isa(m, @compat(Nothing)) && throw(CorruptedException("Time created is improperly formatted"))
     d = DateTime(m.captures[1], HEADER_DATEFORMAT)
     local hr, mn, sc
     try
@@ -200,7 +186,7 @@ function parseto(::Type{DateTime}, str::AbstractString)
     # Check for ambiguous time
     if mapreduce(length, +, m.captures[2:4]) == 5
         if 0 <= rem(hr, 10) <= 5 && 1 <= rem(mn, 10) <= 5 # a 'shifted' parsing would also be valid
-            warn("Header time ", str, " is ambiguous! Assigning the ambiguous digit to hours.")
+            Compat.@warn("Header time ", str, " is ambiguous! Assigning the ambiguous digit to hours.")
         end
     end
     dt = d + Dates.Hour(hr) + Dates.Minute(mn) + Dates.Second(sc)
@@ -208,32 +194,31 @@ function parseto(::Type{DateTime}, str::AbstractString)
 end
 parseto(::Type{VersionNumber}, str::AbstractString) = VersionNumber(str)
 parseto(::Type{String}, str::AbstractString) = String(str)
-parseto(::Type{T}, str::T) where {T<:AbstractString} = str
+parseto(::Type{T}, str::T) where T<:AbstractString = str
 
 "read a Matlab source line"
-function matread(::Type{T}, str::S) where {T<:MATLABdata, S<:AbstractString}
-    regex = rx(T)
-    goodread = false
-    local m
-    if ismatch(regex, str)
-        m = match(rx(T), str)
-        isempty(m.captures) && throw(CorruptedException("Cannot parse header"))
-    end
-    return S(m.captures[1])
+function matread(::Type{T}, str::S) where {T<:MatlabData, S<:AbstractString}
+    m = match(rx(T), str)
+    isnothing(m) && throw(CorruptedException("Cannot parse header"))
+    string(m[1])
 end
 
 ### Matlab regular expressions ###
-rx(::Type{MATstr}) = r" = '(.*)'$"
-rx(::Type{MATint}) = r" = (\d*)$"
-rx(::Type{MATfloat}) = r" = ([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)$"
+rx(::Type{MatStr}) = r" = '(.*)'$"
+rx(::Type{MatInt}) = r" = (\d*)$"
+rx(::Type{MatFloat}) = r" = ([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)$"
+rx(::Type{OEDateTime}) = rx(MatStr)
+rx(::Type{MatVersion}) = rx(MatFloat)
 
-function show(io::IO, a::OriginalHeader)
-    fields = fieldnames(a)
+function show(io::IO, a::O) where O<:OriginalHeader
+    fields = fieldnames(O)
     for field in fields
-        println(io, "$field: $(getfield(a, field))")
+        println(io, field, ": ", getfield(a, field))
     end
 end
-showcompact(io::IO, header::OriginalHeader) = show(io, "channel: $(header.channel)")
+function showcompact(io::IO, header::OriginalHeader)
+    show(IOContext(io, :compact => true), "channel: $(header.channel)")
+end
 function show(io::IO, headers::Vector{OriginalHeader})
     for header in headers
         println(io, showcompact(header))

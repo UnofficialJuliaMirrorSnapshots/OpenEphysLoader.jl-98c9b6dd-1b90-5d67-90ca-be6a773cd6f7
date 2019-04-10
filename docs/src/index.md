@@ -20,9 +20,8 @@ These arrays can be constructed with a `IOStream` at the beginning of an open
 For this example, we will demonstrate how to access sample values using `SampleArray`.
 
 ```@setup loader
-docpath = @__FILE__()
-docdir = dirname(docpath)
-relloadpath = joinpath(docdir, "../test/data")
+docdir = pwd()
+relloadpath = joinpath(docdir, "../../test/data")
 datadir = realpath(relloadpath)
 absloadfile = joinpath(datadir, "100_AUX1.continuous")
 open(absloadfile, "r") do dataio
@@ -108,7 +107,7 @@ Create a regular Julia `Array` from OpenEphysLoader.jl arrays.
 ```@example loader
 io = open(path, "r")
 A = SampleArray(Int16, io) # Elements of A will be read from disk
-D = Array(A) # This will copy the entire contents of A into a regular Julia array in RAM
+D = collect(A) # This will copy the entire contents of A into a regular Julia array in RAM
 D[1:3]
 ```
 ## Recording metadata
